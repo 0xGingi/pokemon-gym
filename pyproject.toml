@@ -11,6 +11,7 @@ dependencies = [
     "openai>=1.82.0",
     "pillow>=11.2.1",
     "pyboy>=2.6.0",
+    "pygame>=2.6.1",
     "requests>=2.32.3",
     "uvicorn>=0.34.2",
 ]
