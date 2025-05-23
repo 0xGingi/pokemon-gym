@@ -76,6 +76,7 @@ export ANTHROPIC_API_KEY=your_anthropic_key_here  # For Claude
 export OPENAI_API_KEY=your_openai_key_here        # For GPT-4o
 export OPENROUTER_API_KEY=your_openrouter_key_here  # For Llama
 export GOOGLE_API_KEY=your_google_key_here        # For Gemini
+export OLLAMA_BASE_URL=http://localhost:11434/v1  # For Ollama (optional, defaults to localhost)
 ```
 
 ## Repository Structure
@@ -139,7 +140,7 @@ Options:
 - `--steps`: Number of steps to run (default: 1000000)
 - `--headless`: Run in headless mode
 - `--sound`: Enable sound (requires non-headless mode)
-- `--provider`: AI provider to use (claude, openai, gemini, openrouter)
+- `--provider`: AI provider to use (claude, openai, gemini, openrouter, ollama)
 - `--model`: Model to use (default depends on provider)
 - `--temperature`: Temperature for model generation (default: 1.0)
 - `--max-tokens`: Max tokens for response (default: 4000)
@@ -201,6 +202,29 @@ Load the latest autosave:
 python agents/human_agent.py --load-autosave
 python agents/demo_agent.py --load-autosave
 ```
+
+## Using Ollama
+
+To use Ollama with Pokemon Gym:
+
+1. **Install and start Ollama:**
+   ```bash
+   # Install Ollama (see https://ollama.ai for installation instructions)
+   # Pull a vision-capable model
+   ollama pull gemma3:4b
+   ```
+
+2. **Set the Ollama base URL (optional):**
+   ```bash
+   export OLLAMA_BASE_URL=http://localhost:11434/v1  # Default value
+   ```
+
+3. **Run the agent with Ollama:**
+   ```bash
+   python agents/demo_agent.py --provider ollama --model gemma3:4b
+   ```
+
+Note: Ollama provides an OpenAI-compatible API, so it uses the same text-based interaction as OpenAI and OpenRouter providers.
 
 ## Component Documentation
 

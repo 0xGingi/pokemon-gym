@@ -157,6 +157,14 @@ class AIServerAgent:
             self.client = OpenAI(api_key=api_key)
             self.model_name = model_name or "gpt-4o"
             logger.info(f"Using OpenAI provider with model: {self.model_name}")
+        elif self.provider == "ollama":
+            ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+            self.client = OpenAI(
+                api_key="ollama",
+                base_url=ollama_base_url
+            )
+            self.model_name = model_name or "gemma3:4b"
+            logger.info(f"Using Ollama provider with model: {self.model_name} at {ollama_base_url}")
         elif self.provider == "openrouter":
             api_key = os.getenv("OPENROUTER_API_KEY")
             if not api_key:
@@ -185,7 +193,7 @@ class AIServerAgent:
             )
             logger.info(f"Using Gemini provider with model: {self.model_name}")
         else:
-            raise ValueError(f"Unsupported provider: {self.provider}. Choose 'claude', 'openai', 'openrouter', or 'gemini'")
+            raise ValueError(f"Unsupported provider: {self.provider}. Choose 'claude', 'openai', 'ollama', 'openrouter', or 'gemini'")
         
         # Chat history
         self.message_history = []
@@ -529,7 +537,7 @@ class AIServerAgent:
                     
                     return custom_response
                 else:
-                    # For OpenAI, OpenRouter, use OpenAI compatible API
+                    # For OpenAI, OpenRouter, Ollama, use OpenAI compatible API
                     # Extract important params from kwargs
                     messages = kwargs.get('messages', self.message_history)
                     
@@ -538,7 +546,7 @@ class AIServerAgent:
                     cleaned_messages = self._clean_message_history(messages)
                     
                     # Select appropriate system prompt based on provider
-                    system_prompt = OPENAI_SYSTEM_PROMPT if self.provider in ["openai", "openrouter"] else CLAUDE_SYSTEM_PROMPT
+                    system_prompt = OPENAI_SYSTEM_PROMPT if self.provider in ["openai", "openrouter", "ollama"] else CLAUDE_SYSTEM_PROMPT
                     
                     # Convert to OpenAI format if needed
                     openai_messages = [{"role": "system", "content": system_prompt}]
@@ -603,31 +611,87 @@ class AIServerAgent:
                                 elif msg["role"] != "tool":  # Skip tool messages entirely
                                     openai_messages.append(msg)
                     
-                    # For OpenAI, log message history for debugging
+                    # For OpenAI/OpenRouter/Ollama, log message history for debugging
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(f"Messages for {self.provider}: {json.dumps(openai_messages, indent=2)}")
                     
-                    # For OpenAI, we'll use text mode instead of tools
-                    tools = []
-                    if self.provider != "openai" and self.provider != "openrouter":
-                        # Only add tools for non-OpenAI providers
-                        tools = []
-                        for tool in AVAILABLE_TOOLS:
-                            tools.append({
-                                "type": "function",
-                                "function": {
-                                    "name": tool["name"],
-                                    "description": tool["description"],
-                                    "parameters": tool["input_schema"]
-                                }
-                            })
-                    
+                    # For OpenAI/OpenRouter/Ollama, simplify to basic chat history without tools
+                    if self.provider in ["openai", "openrouter", "ollama"]:
+                        # Find the last 10 messages that are either user or assistant (no tools)
+                        recent_messages = []
+                        for msg in messages:
+                            if msg["role"] in ["user", "assistant"]:
+                                # Skip any message with tool_calls
+                                if msg["role"] == "assistant" and "tool_calls" in msg:
+                                    # Convert tool_calls to text
+                                    text_content = msg.get("content", "") or ""
+                                    # Add text descriptions of each tool call
+                                    for tc in msg.get("tool_calls", []):
+                                        if isinstance(tc, dict) and "function" in tc:
+                                            func = tc["function"]
+                                            if "name" in func and "arguments" in func:
+                                                try:
+                                                    args = json.loads(func["arguments"])
+                                                    if func["name"] == "press_key" and "button" in args:
+                                                        text_content += f"I'll press the {args['button']} button.\n"
+                                                    elif func["name"] == "wait" and "frames" in args:
+                                                        text_content += f"I'll wait for {args['frames']} frames.\n"
+                                                except:
+                                                    pass
+                                    if text_content:
+                                        recent_messages.append({"role": "assistant", "content": text_content})
+                                else:
+                                    recent_messages.append(msg)
+                        
+                        # Keep only the last 10 messages
+                        if len(recent_messages) > 10:
+                            recent_messages = recent_messages[-10:]
+                        
+                        # Add recent messages to cleaned list
+                        cleaned_messages.extend(recent_messages)
+                    else:
+                        # For Claude and other providers, use existing logic
+                        # Find the last sent user message
+                        last_user_msg = None
+                        for i in range(len(messages) - 1, -1, -1):
+                            if messages[i]["role"] == "user":
+                                last_user_msg = messages[i]
+                                break
+                        
+                        # If a user message is found, add it
+                        if last_user_msg:
+                            cleaned_messages.append(last_user_msg)
+                            
+                            # For other providers, find possible tool calls and responses
+                            # Only keep the last tool call and response (if exists)
+                            for i in range(len(messages) - 1, -1, -1):
+                                # Find assistant messages with tool calls
+                                if messages[i]["role"] == "assistant" and "tool_calls" in messages[i]:
+                                    # Add this assistant message
+                                    cleaned_messages.append(messages[i])
+                                    
+                                    # Find corresponding tool response (only process first tool call)
+                                    if "tool_calls" in messages[i] and messages[i]["tool_calls"]:
+                                        # Handle both object and dictionary access patterns
+                                        tool_call = messages[i]["tool_calls"][0]
+                                        tool_call_id = tool_call.id if hasattr(tool_call, 'id') else tool_call.get("id")
+                                        
+                                        # Find corresponding tool response
+                                        for j in range(i + 1, len(messages)):
+                                            if (messages[j]["role"] == "tool" and 
+                                                messages[j].get("tool_call_id") == tool_call_id):
+                                                cleaned_messages.append(messages[j])
+                                                break
+                                    
+                                    # Process tool chain only once
+                                    break
+                        
                     # Call OpenAI compatible API
                     return self.client.chat.completions.create(
                         model=self.model_name,
                         max_tokens=self.max_tokens,
                         messages=openai_messages,
-                        tools=tools if tools else None,
+                        tools=None,
                         temperature=self.temperature,
                     )
                     
@@ -644,10 +708,10 @@ class AIServerAgent:
     
     def _extract_action_from_text(self, text):
         """
-        Extract action from text response for OpenAI text-only mode
+        Extract action from text response for OpenAI-compatible providers (OpenAI, OpenRouter, Ollama)
         
         Args:
-            text: The text response from OpenAI
+            text: The text response from the provider
             
         Returns:
             Action data dictionary
@@ -751,7 +815,7 @@ class AIServerAgent:
         cleaned = []
         
         # Select the appropriate system prompt based on provider
-        system_prompt = OPENAI_SYSTEM_PROMPT if self.provider in ["openai", "openrouter"] else CLAUDE_SYSTEM_PROMPT
+        system_prompt = OPENAI_SYSTEM_PROMPT if self.provider in ["openai", "openrouter", "ollama"] else CLAUDE_SYSTEM_PROMPT
         
         # Keep system message if present
         for msg in messages:
@@ -764,7 +828,7 @@ class AIServerAgent:
             cleaned.append({"role": "system", "content": system_prompt})
         
         # For OpenAI/OpenRouter, simplify to basic chat history without tools
-        if self.provider == "openai" or self.provider == "openrouter":
+        if self.provider in ["openai", "openrouter", "ollama"]:
             # Find the last 10 messages that are either user or assistant (no tools)
             recent_messages = []
             for msg in messages:
@@ -1032,12 +1096,11 @@ class AIServerAgent:
                     logger.info(f"[{self.provider}] {message.content}")
                     assistant_content = message.content
                     
-                    # For OpenAI, parse the text response to determine action
-                    # Look for keywords indicating button presses or wait actions
+                    # For OpenAI/OpenRouter/Ollama, parse the text response to determine action
                     action_data = self._extract_action_from_text(message.content)
                     
                 # Extract tool calls if present - only used for non-OpenAI providers
-                if self.provider != "openai" and self.provider != "openrouter" and hasattr(message, 'tool_calls') and message.tool_calls:
+                if self.provider not in ["openai", "openrouter", "ollama"] and hasattr(message, 'tool_calls') and message.tool_calls:
                     # Log all tool calls
                     if len(message.tool_calls) > 1:
                         logger.info(f"[{self.provider}] Multiple tool calls detected: {len(message.tool_calls)}")
@@ -1194,12 +1257,20 @@ class AIServerAgent:
             logger.info(f"Message history size: {len(self.message_history)} messages")
             roles = [msg["role"] for msg in self.message_history]
             logger.info(f"Message roles: {roles}")
-        elif self.provider == "openai" or self.provider == "openrouter":
+        elif self.provider in ["openai", "openrouter", "ollama"]:
             # Add assistant's response as plain text
             self.message_history.append({
                 "role": "assistant",
                 "content": assistant_content
             })
+            
+            # Create result message
+            if action_data["action_type"] == "press_key":
+                result_message = f"Button '{action_data['button']}' pressed successfully. New location: {next_state['location']}, Coordinates: {next_state['coordinates']}"
+            elif action_data["action_type"] == "wait":
+                result_message = f"Waited for {action_data['frames']} frames. New location: {next_state['location']}, Coordinates: {next_state['coordinates']}"
+            else:
+                result_message = f"Action executed. New location: {next_state['location']}, Coordinates: {next_state['coordinates']}"
             
             # Add result as user message with new image
             new_user_msg = {
@@ -1490,8 +1561,8 @@ def main():
     parser.add_argument("--steps", type=int, default=1000000, help="Number of steps to run")
     parser.add_argument("--headless", action="store_true", help="Run headless")
     parser.add_argument("--sound", action="store_true", help="Enable sound")
-    parser.add_argument("--provider", type=str, default="claude", choices=["claude", "openai", "openrouter", "gemini"], 
-                      help="LLM provider to use (claude, openai, openrouter, gemini)")
+    parser.add_argument("--provider", type=str, default="claude", choices=["claude", "openai", "ollama", "openrouter", "gemini"], 
+                      help="LLM provider to use (claude, openai, ollama, openrouter, gemini)")
     parser.add_argument("--model", type=str, default=None, help="Model name for the selected provider")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature parameter for Claude")
     parser.add_argument("--max-tokens", type=int, default=4000, help="Maximum tokens for Claude to generate")

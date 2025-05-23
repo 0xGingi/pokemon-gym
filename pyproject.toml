@@ -1,0 +1,16 @@
+[project]
+name = "pokemon-gym"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.52.0",
+    "fastapi>=0.115.12",
+    "google-generativeai>=0.8.5",
+    "openai>=1.82.0",
+    "pillow>=11.2.1",
+    "pyboy>=2.6.0",
+    "requests>=2.32.3",
+    "uvicorn>=0.34.2",
+]
